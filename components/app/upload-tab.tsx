@@ -11,6 +11,7 @@ import type { UsageResponse } from "@/modules/usage";
 
 type UploadTabProps = {
   target: UserTarget | null;
+  onUploadComplete?: () => void;
 };
 
 function usageMessage(usage: UsageResponse | null): {
@@ -35,7 +36,7 @@ function usageMessage(usage: UsageResponse | null): {
   };
 }
 
-export function UploadTab({ target }: UploadTabProps) {
+export function UploadTab({ target, onUploadComplete }: UploadTabProps) {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -107,7 +108,11 @@ export function UploadTab({ target }: UploadTabProps) {
         />
       </div>
 
-      <UploadZone disabled={!target} target={target} />
+      <UploadZone
+        disabled={!target}
+        target={target}
+        onUploadComplete={() => onUploadComplete?.()}
+      />
     </div>
   );
 }

@@ -1,4 +1,5 @@
 export {
+  batchNameSchema,
   buildCopyPayload,
   createHistoryBatchSchema,
   historyBatchSchema,

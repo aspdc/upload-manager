@@ -5,10 +5,17 @@ export const historyItemSchema = z.object({
   publicUrl: z.url(),
 });
 
+export const batchNameSchema = z
+  .string()
+  .trim()
+  .min(1, "Give this upload a name")
+  .max(100, "Name must be 100 characters or fewer");
+
 export const createHistoryBatchSchema = z.object({
   accountId: z.string().min(1),
   bucketName: z.string().min(1),
   publicBaseUrl: z.url(),
+  name: batchNameSchema,
   items: z.array(historyItemSchema).min(1),
 });
 
@@ -16,6 +23,7 @@ export type CreateHistoryBatchInput = z.infer<typeof createHistoryBatchSchema>;
 
 export const historyBatchSchema = z.object({
   id: z.string(),
+  name: z.string(),
   createdAt: z.string(),
   itemCount: z.number(),
   copyPayload: z.string(),

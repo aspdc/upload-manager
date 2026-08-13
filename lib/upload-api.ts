@@ -20,6 +20,14 @@ type ApiError = {
 async function parseJson<T>(response: Response): Promise<T | ApiError> {
   const payload = (await response.json()) as T | ApiError;
   if (!response.ok) {
+    if (
+      typeof payload === "object" &&
+      payload !== null &&
+      "items" in payload &&
+      Array.isArray((payload as { items?: unknown }).items)
+    ) {
+      return payload as T;
+    }
     const message =
       typeof payload === "object" &&
       payload !== null &&
@@ -51,15 +59,18 @@ export async function uploadFiles({
   target,
   files,
   keys,
+  batchName,
 }: {
   target: UploadTarget;
   files: File[];
   keys: string[];
+  batchName: string;
 }): Promise<UploadResult | ApiError> {
   const formData = new FormData();
   formData.append("accountId", target.accountId);
   formData.append("bucketName", target.bucketName);
   formData.append("publicBaseUrl", target.publicBaseUrl);
+  formData.append("batchName", batchName);
   formData.append("keys", JSON.stringify(keys));
 
   for (const file of files) {

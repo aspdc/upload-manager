@@ -1,4 +1,6 @@
 import { Elysia } from "elysia";
+import { db } from "@/db";
+import { uploadBatch, uploadItem } from "@/db/schema";
 import { getCloudflareAccessToken } from "@/lib/cloudflare-token";
 import { tryCatch } from "@/lib/try-catch";
 import {
@@ -6,6 +8,7 @@ import {
   objectExists,
   putObject,
 } from "@/modules/cloudflare/r2";
+import { batchNameSchema } from "@/modules/history/history.schema";
 import { requireAuth } from "@/middleware/auth";
 import {
   buildCopyPayload,
@@ -21,6 +24,10 @@ type ParsedUploadFile = {
   size: number;
 };
 
+function createId() {
+  return crypto.randomUUID();
+}
+
 async function parseMultipartUpload(request: Request): Promise<
   | {
       target: {
@@ -28,19 +35,26 @@ async function parseMultipartUpload(request: Request): Promise<
         bucketName: string;
         publicBaseUrl: string;
       };
+      batchName: string;
       files: ParsedUploadFile[];
       error: null;
     }
-  | { target: null; files: []; error: string }
+  | { target: null; batchName: null; files: []; error: string }
 > {
   const { data: formData, error } = await tryCatch(request.formData());
   if (error) {
-    return { target: null, files: [], error: "Invalid upload request" };
+    return {
+      target: null,
+      batchName: null,
+      files: [],
+      error: "Invalid upload request",
+    };
   }
 
   const accountId = formData.get("accountId");
   const bucketName = formData.get("bucketName");
   const publicBaseUrl = formData.get("publicBaseUrl");
+  const batchNameRaw = formData.get("batchName");
   const keysRaw = formData.get("keys");
 
   const targetParsed = uploadTargetSchema.safeParse({
@@ -50,7 +64,26 @@ async function parseMultipartUpload(request: Request): Promise<
   });
 
   if (!targetParsed.success) {
-    return { target: null, files: [], error: "Upload target is invalid" };
+    return {
+      target: null,
+      batchName: null,
+      files: [],
+      error: "Upload target is invalid",
+    };
+  }
+
+  const batchNameParsed = batchNameSchema.safeParse(
+    typeof batchNameRaw === "string" ? batchNameRaw : "",
+  );
+  if (!batchNameParsed.success) {
+    return {
+      target: null,
+      batchName: null,
+      files: [],
+      error:
+        batchNameParsed.error.issues[0]?.message ??
+        "Give this upload a name",
+    };
   }
 
   let keys: string[] = [];
@@ -59,24 +92,45 @@ async function parseMultipartUpload(request: Request): Promise<
       Promise.resolve(JSON.parse(keysRaw) as unknown),
     );
     if (keysError || !Array.isArray(parsedKeys)) {
-      return { target: null, files: [], error: "Upload keys are invalid" };
+      return {
+        target: null,
+        batchName: null,
+        files: [],
+        error: "Upload keys are invalid",
+      };
     }
     if (!parsedKeys.every((key) => typeof key === "string" && key.length > 0)) {
-      return { target: null, files: [], error: "Upload keys are invalid" };
+      return {
+        target: null,
+        batchName: null,
+        files: [],
+        error: "Upload keys are invalid",
+      };
     }
     keys = parsedKeys;
   } else {
-    return { target: null, files: [], error: "Upload keys are required" };
+    return {
+      target: null,
+      batchName: null,
+      files: [],
+      error: "Upload keys are required",
+    };
   }
 
   const fileEntries = formData.getAll("files");
   if (fileEntries.length === 0) {
-    return { target: null, files: [], error: "No files were provided" };
+    return {
+      target: null,
+      batchName: null,
+      files: [],
+      error: "No files were provided",
+    };
   }
 
   if (fileEntries.length !== keys.length) {
     return {
       target: null,
+      batchName: null,
       files: [],
       error: "Each file must have a matching object key",
     };
@@ -89,7 +143,12 @@ async function parseMultipartUpload(request: Request): Promise<
     const key = keys[index];
 
     if (!(entry instanceof File)) {
-      return { target: null, files: [], error: "Invalid file entry in upload" };
+      return {
+        target: null,
+        batchName: null,
+        files: [],
+        error: "Invalid file entry in upload",
+      };
     }
 
     const validation = validateImageFile({
@@ -99,7 +158,12 @@ async function parseMultipartUpload(request: Request): Promise<
     });
 
     if (!validation.valid) {
-      return { target: null, files: [], error: validation.error };
+      return {
+        target: null,
+        batchName: null,
+        files: [],
+        error: validation.error,
+      };
     }
 
     const { data: body, error: bodyError } = await tryCatch(
@@ -108,6 +172,7 @@ async function parseMultipartUpload(request: Request): Promise<
     if (bodyError) {
       return {
         target: null,
+        batchName: null,
         files: [],
         error: `Could not read ${key} for upload`,
       };
@@ -123,9 +188,44 @@ async function parseMultipartUpload(request: Request): Promise<
 
   return {
     target: targetParsed.data,
+    batchName: batchNameParsed.data,
     files,
     error: null,
   };
+}
+
+async function saveUploadHistory(input: {
+  userId: string;
+  accountId: string;
+  bucketName: string;
+  publicBaseUrl: string;
+  batchName: string;
+  items: Array<{ key: string; publicUrl: string }>;
+}) {
+  const batchId = createId();
+
+  await db.transaction(async (tx) => {
+    await tx.insert(uploadBatch).values({
+      id: batchId,
+      userId: input.userId,
+      accountId: input.accountId,
+      bucketName: input.bucketName,
+      publicBaseUrl: input.publicBaseUrl,
+      name: input.batchName,
+    });
+
+    await tx.insert(uploadItem).values(
+      input.items.map((item, index) => ({
+        id: createId(),
+        batchId,
+        objectKey: item.key,
+        publicUrl: item.publicUrl,
+        sortOrder: index,
+      })),
+    );
+  });
+
+  return batchId;
 }
 
 export const uploadRoutes = new Elysia({ prefix: "/upload" })
@@ -174,9 +274,9 @@ export const uploadRoutes = new Elysia({ prefix: "/upload" })
 
     return { conflicts };
   })
-  .post("/", async ({ request, status }) => {
+  .post("/", async ({ request, user, status }) => {
     const parsed = await parseMultipartUpload(request);
-    if (parsed.error || !parsed.target) {
+    if (parsed.error || !parsed.target || !parsed.batchName) {
       return status(400, { error: parsed.error ?? "Invalid upload request" });
     }
 
@@ -191,15 +291,17 @@ export const uploadRoutes = new Elysia({ prefix: "/upload" })
     }
 
     const { accountId, bucketName, publicBaseUrl } = parsed.target;
+    const batchName = parsed.batchName;
     const uploadedItems: Array<{
       key: string;
       publicUrl: string;
       contentType: string;
       size: number;
     }> = [];
+    let uploadError: string | null = null;
 
     for (const file of parsed.files) {
-      const { etag, error } = await putObject({
+      const { error } = await putObject({
         accountId,
         bucketName,
         key: file.key,
@@ -209,10 +311,8 @@ export const uploadRoutes = new Elysia({ prefix: "/upload" })
       });
 
       if (error) {
-        return status(502, {
-          error: `${file.key}: ${error}`,
-          items: uploadedItems,
-        });
+        uploadError = `${file.key}: ${error}`;
+        break;
       }
 
       uploadedItems.push({
@@ -221,16 +321,60 @@ export const uploadRoutes = new Elysia({ prefix: "/upload" })
         contentType: file.contentType,
         size: file.size,
       });
+    }
 
-      if (!etag) {
-        continue;
-      }
+    if (uploadedItems.length === 0) {
+      return status(502, {
+        error: uploadError ?? "Upload failed",
+        items: [],
+        copyPayload: "",
+        historySaved: false,
+      });
     }
 
     const urls = uploadedItems.map((item) => item.publicUrl);
+    const copyPayload = buildCopyPayload(urls);
+
+    const { error: historyError } = await tryCatch(
+      saveUploadHistory({
+        userId: user.id,
+        accountId,
+        bucketName,
+        publicBaseUrl,
+        batchName,
+        items: uploadedItems.map((item) => ({
+          key: item.key,
+          publicUrl: item.publicUrl,
+        })),
+      }),
+    );
+
+    if (historyError) {
+      return {
+        items: uploadedItems,
+        copyPayload,
+        batchName,
+        historySaved: false,
+        error:
+          uploadError ??
+          "Files uploaded, but history could not be saved. Try again later.",
+      };
+    }
+
+    if (uploadError) {
+      return {
+        items: uploadedItems,
+        copyPayload,
+        batchName,
+        historySaved: true,
+        error: uploadError,
+      };
+    }
 
     return {
       items: uploadedItems,
-      copyPayload: buildCopyPayload(urls),
+      copyPayload,
+      batchName,
+      historySaved: true,
     };
   });

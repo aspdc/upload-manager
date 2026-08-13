@@ -11,6 +11,8 @@ import {
   type UploadFileEntry,
 } from "@/components/upload/upload-file-list";
 import { UploadDropzone } from "@/components/upload/upload-dropzone";
+import { UploadNameDialog } from "@/components/upload/upload-name-dialog";
+import { UploadSuccessDialog } from "@/components/upload/upload-success-dialog";
 import { checkUploadConflicts, uploadFiles } from "@/lib/upload-api";
 import type {
   ConflictStrategy,
@@ -44,12 +46,18 @@ export function UploadPanel({
   const [files, setFiles] = useState<UploadFileEntry[]>([]);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
+  const [batchName, setBatchName] = useState<string | null>(null);
+  const [successResult, setSuccessResult] = useState<UploadResult | null>(null);
   const [activeConflict, setActiveConflict] =
     useState<ConflictQueueItem | null>(null);
   const conflictResolverRef = useRef<
-    | ((value: { strategy: ConflictStrategy; applyToAll: boolean }) => void)
+    | ((
+        value: { strategy: ConflictStrategy; applyToAll: boolean } | null,
+      ) => void)
     | null
   >(null);
+  const nameResolverRef = useRef<((value: string | null) => void) | null>(null);
 
   const completedCount = useMemo(
     () => files.filter((file) => file.status === "done").length,
@@ -65,11 +73,19 @@ export function UploadPanel({
 
   const waitForConflictChoice = useCallback((item: ConflictQueueItem) => {
     setActiveConflict(item);
-    return new Promise<{ strategy: ConflictStrategy; applyToAll: boolean }>(
-      (resolve) => {
-        conflictResolverRef.current = resolve;
-      },
-    );
+    return new Promise<{
+      strategy: ConflictStrategy;
+      applyToAll: boolean;
+    } | null>((resolve) => {
+      conflictResolverRef.current = resolve;
+    });
+  }, []);
+
+  const waitForBatchName = useCallback((incoming: File[]) => {
+    setPendingFiles(incoming);
+    return new Promise<string | null>((resolve) => {
+      nameResolverRef.current = resolve;
+    });
   }, []);
 
   const handleConflictResolve = useCallback(
@@ -82,10 +98,21 @@ export function UploadPanel({
   );
 
   const handleConflictCancel = useCallback(() => {
+    conflictResolverRef.current?.(null);
     conflictResolverRef.current = null;
     setActiveConflict(null);
-    setIsProcessing(false);
-    setQueueError("Upload cancelled");
+  }, []);
+
+  const handleNameConfirm = useCallback((name: string) => {
+    nameResolverRef.current?.(name);
+    nameResolverRef.current = null;
+    setPendingFiles(null);
+  }, []);
+
+  const handleNameCancel = useCallback(() => {
+    nameResolverRef.current?.(null);
+    nameResolverRef.current = null;
+    setPendingFiles(null);
   }, []);
 
   const resolveConflicts = useCallback(
@@ -129,6 +156,9 @@ export function UploadPanel({
             entryId: entry.id,
             originalKey: entry.originalKey,
           });
+          if (!choice) {
+            throw new Error("Upload cancelled");
+          }
           chosenStrategy = choice.strategy;
           if (choice.applyToAll) {
             batchStrategy = choice.strategy;
@@ -163,6 +193,8 @@ export function UploadPanel({
 
       setQueueError(null);
       setIsProcessing(true);
+      setSuccessResult(null);
+      setBatchName(null);
 
       const nextEntries: UploadFileEntry[] = [];
 
@@ -190,6 +222,15 @@ export function UploadPanel({
 
       setFiles(nextEntries);
 
+      const chosenName = await waitForBatchName(incomingFiles);
+      if (!chosenName) {
+        setIsProcessing(false);
+        setFiles([]);
+        return;
+      }
+
+      setBatchName(chosenName);
+
       let resolvedEntries: UploadFileEntry[];
       try {
         resolvedEntries = await resolveConflicts(nextEntries);
@@ -201,71 +242,82 @@ export function UploadPanel({
         return;
       }
 
-      setFiles(resolvedEntries);
+      setFiles(
+        resolvedEntries.map((entry) => ({
+          ...entry,
+          status: "uploading" as const,
+          error: undefined,
+        })),
+      );
 
-      const uploadedItems: UploadResult["items"] = [];
+      const result = await uploadFiles({
+        target,
+        files: resolvedEntries.map((entry) => entry.file),
+        keys: resolvedEntries.map((entry) => entry.resolvedKey),
+        batchName: chosenName,
+      });
 
-      for (const entry of resolvedEntries) {
+      if ("error" in result && !("items" in result)) {
         setFiles((current) =>
-          current.map((item) =>
-            item.id === entry.id
-              ? { ...item, status: "uploading", error: undefined }
-              : item,
-          ),
+          current.map((item) => ({
+            ...item,
+            status: "failed",
+            error: result.error,
+          })),
         );
+        setQueueError(result.error);
+        setIsProcessing(false);
+        return;
+      }
 
-        const result = await uploadFiles({
-          target,
-          files: [entry.file],
-          keys: [entry.resolvedKey],
-        });
+      const uploadedByKey = new Map(
+        result.items.map((item) => [item.key, item] as const),
+      );
 
-        if ("error" in result) {
-          setFiles((current) =>
-            current.map((item) =>
-              item.id === entry.id
-                ? { ...item, status: "failed", error: result.error }
-                : item,
-            ),
-          );
-          setQueueError(result.error);
-          setIsProcessing(false);
-          return;
-        }
+      setFiles((current) =>
+        current.map((item) => {
+          const uploaded = uploadedByKey.get(item.resolvedKey);
+          if (!uploaded) {
+            return {
+              ...item,
+              status: "failed",
+              error: result.error ?? "Upload failed",
+            };
+          }
+          return {
+            ...item,
+            status: "done",
+            publicUrl: uploaded.publicUrl,
+            resolvedKey: uploaded.key,
+          };
+        }),
+      );
 
-        const uploaded = result.items[0];
-        if (!uploaded) {
-          setQueueError(`Upload failed for ${entry.resolvedKey}`);
-          setIsProcessing(false);
-          return;
-        }
-
-        uploadedItems.push(uploaded);
-
-        setFiles((current) =>
-          current.map((item) =>
-            item.id === entry.id
-              ? {
-                  ...item,
-                  status: "done",
-                  publicUrl: uploaded.publicUrl,
-                  resolvedKey: uploaded.key,
-                }
-              : item,
-          ),
-        );
+      if (result.items.length === 0) {
+        setQueueError(result.error ?? "Upload failed");
+        setIsProcessing(false);
+        return;
       }
 
       const uploadResult: UploadResult = {
-        items: uploadedItems,
-        copyPayload: uploadedItems.map((item) => item.publicUrl).join(","),
+        items: result.items,
+        copyPayload: result.copyPayload,
+        batchName: result.batchName ?? chosenName,
+        historySaved: result.historySaved,
+        error: result.error,
       };
 
+      setSuccessResult(uploadResult);
       onUploadComplete?.(uploadResult);
-      setFiles([]);
       setIsProcessing(false);
+
+      if (result.error) {
+        setQueueError(result.error);
+      } else {
+        setFiles([]);
+      }
     },
-    [disabled, onUploadComplete, resolveConflicts, target],
+    [disabled, onUploadComplete, resolveConflicts, target, waitForBatchName],
   );
 
   return (
@@ -281,7 +333,9 @@ export function UploadPanel({
         <div className="mt-4 flex flex-col gap-3">
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-medium">Overall progress</p>
+              <p className="text-xs font-medium">
+                {batchName ? batchName : "Overall progress"}
+              </p>
               <p className="text-xs text-muted-foreground tabular-nums">
                 {completedCount} / {files.length} uploaded
               </p>
@@ -307,17 +361,32 @@ export function UploadPanel({
           onClick={() => {
             setFiles([]);
             setQueueError(null);
+            setBatchName(null);
           }}
         >
           Clear queue
         </Button>
       ) : null}
 
+      <UploadNameDialog
+        key={pendingFiles ? `name-${pendingFiles.length}-${files[0]?.id ?? "new"}` : "name-closed"}
+        open={pendingFiles !== null}
+        fileCount={pendingFiles?.length ?? 0}
+        onConfirm={handleNameConfirm}
+        onCancel={handleNameCancel}
+      />
+
       <UploadConflictDialog
         open={activeConflict !== null}
         fileName={activeConflict?.originalKey ?? ""}
         onResolve={handleConflictResolve}
         onCancel={handleConflictCancel}
+      />
+
+      <UploadSuccessDialog
+        open={successResult !== null}
+        result={successResult}
+        onClose={() => setSuccessResult(null)}
       />
     </div>
   );

@@ -12,6 +12,7 @@ export const uploadBatch = pgTable(
     accountId: text("account_id").notNull(),
     bucketName: text("bucket_name").notNull(),
     publicBaseUrl: text("public_base_url").notNull(),
+    name: text("name").notNull().default("Untitled upload"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [

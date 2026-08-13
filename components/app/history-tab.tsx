@@ -13,9 +13,10 @@ import type { UserTarget } from "@/modules/target";
 
 type HistoryTabProps = {
   target: UserTarget | null;
+  refreshKey?: number;
 };
 
-export function HistoryTab({ target }: HistoryTabProps) {
+export function HistoryTab({ target, refreshKey = 0 }: HistoryTabProps) {
   const [batches, setBatches] = useState<HistoryBatch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -57,9 +58,9 @@ export function HistoryTab({ target }: HistoryTabProps) {
   }, [target]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- client fetch on target change
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client fetch on target/refresh change
     void loadHistory();
-  }, [loadHistory]);
+  }, [loadHistory, refreshKey]);
 
   async function copyBatch(batch: HistoryBatch) {
     const { error: clipboardError } = await tryCatch(
@@ -122,10 +123,9 @@ export function HistoryTab({ target }: HistoryTabProps) {
           className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between"
         >
           <div className="min-w-0 space-y-1">
-            <p className="text-sm font-medium">
-              {batch.itemCount === 1 ? "1 file" : `${batch.itemCount} files`}
-            </p>
+            <p className="truncate text-sm font-medium">{batch.name}</p>
             <p className="text-xs text-muted-foreground">
+              {batch.itemCount === 1 ? "1 file" : `${batch.itemCount} files`} ·{" "}
               {new Date(batch.createdAt).toLocaleString()}
             </p>
             <p className="truncate text-xs text-muted-foreground">

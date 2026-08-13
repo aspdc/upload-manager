@@ -48,6 +48,7 @@ export const historyRoutes = new Elysia({ prefix: "/history" })
         const urls = batch.items.map((item) => item.publicUrl);
         return {
           id: batch.id,
+          name: batch.name,
           createdAt: batch.createdAt.toISOString(),
           itemCount: batch.items.length,
           copyPayload: buildCopyPayload(urls),
@@ -69,7 +70,7 @@ export const historyRoutes = new Elysia({ prefix: "/history" })
       });
     }
 
-    const { accountId, bucketName, publicBaseUrl, items } = parsed.data;
+    const { accountId, bucketName, publicBaseUrl, name, items } = parsed.data;
     const batchId = createId();
 
     const { error } = await tryCatch(
@@ -80,6 +81,7 @@ export const historyRoutes = new Elysia({ prefix: "/history" })
           accountId,
           bucketName,
           publicBaseUrl,
+          name,
         });
 
         await tx.insert(uploadItem).values(
@@ -103,6 +105,7 @@ export const historyRoutes = new Elysia({ prefix: "/history" })
     return {
       batch: {
         id: batchId,
+        name,
         createdAt: new Date().toISOString(),
         itemCount: items.length,
         copyPayload: buildCopyPayload(urls),

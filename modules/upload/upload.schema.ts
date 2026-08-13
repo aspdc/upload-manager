@@ -33,9 +33,19 @@ export type UploadedItem = z.infer<typeof uploadedItemSchema>;
 export const uploadResultSchema = z.object({
   items: z.array(uploadedItemSchema),
   copyPayload: z.string(),
+  batchName: z.string().optional(),
+  historySaved: z.boolean().optional(),
+  error: z.string().optional(),
 });
 
 export type UploadResult = z.infer<typeof uploadResultSchema>;
+
+export function buildCopyPayload(urls: string[]): string {
+  if (urls.length === 1) {
+    return urls[0] ?? "";
+  }
+  return urls.join(",");
+}
 
 const MIME_EXTENSION_MAP: Record<string, readonly string[]> = {
   "image/jpeg": ["jpg", "jpeg"],
@@ -156,8 +166,4 @@ export function validateImageFile(file: {
   }
 
   return { valid: true };
-}
-
-export function buildCopyPayload(urls: string[]): string {
-  return urls.join(",");
 }
