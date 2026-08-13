@@ -4,6 +4,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { compressImageToMaxBytes } from "@/components/upload/compress-image";
 import { findAvailableCopyKey } from "@/components/upload/conflict-utils";
 import { UploadConflictDialog } from "@/components/upload/upload-conflict-dialog";
 import {
@@ -12,7 +13,12 @@ import {
 } from "@/components/upload/upload-file-list";
 import { UploadDropzone } from "@/components/upload/upload-dropzone";
 import { UploadNameDialog } from "@/components/upload/upload-name-dialog";
+import {
+  UploadOversizedDialog,
+  type OversizedStrategy,
+} from "@/components/upload/upload-oversized-dialog";
 import { UploadSuccessDialog } from "@/components/upload/upload-success-dialog";
+import { MAX_UPLOAD_BYTES } from "@/lib/constants";
 import { checkUploadConflicts, uploadFiles } from "@/lib/upload-api";
 import type {
   ConflictStrategy,
@@ -33,6 +39,12 @@ type ConflictQueueItem = {
   originalKey: string;
 };
 
+type OversizedQueueItem = {
+  entryId: string;
+  fileName: string;
+  fileSize: number;
+};
+
 function createEntryId() {
   return crypto.randomUUID();
 }
@@ -51,9 +63,17 @@ export function UploadPanel({
   const [successResult, setSuccessResult] = useState<UploadResult | null>(null);
   const [activeConflict, setActiveConflict] =
     useState<ConflictQueueItem | null>(null);
+  const [activeOversized, setActiveOversized] =
+    useState<OversizedQueueItem | null>(null);
   const conflictResolverRef = useRef<
     | ((
         value: { strategy: ConflictStrategy; applyToAll: boolean } | null,
+      ) => void)
+    | null
+  >(null);
+  const oversizedResolverRef = useRef<
+    | ((
+        value: { strategy: OversizedStrategy; applyToAll: boolean } | null,
       ) => void)
     | null
   >(null);
@@ -81,6 +101,16 @@ export function UploadPanel({
     });
   }, []);
 
+  const waitForOversizedChoice = useCallback((item: OversizedQueueItem) => {
+    setActiveOversized(item);
+    return new Promise<{
+      strategy: OversizedStrategy;
+      applyToAll: boolean;
+    } | null>((resolve) => {
+      oversizedResolverRef.current = resolve;
+    });
+  }, []);
+
   const waitForBatchName = useCallback((incoming: File[]) => {
     setPendingFiles(incoming);
     return new Promise<string | null>((resolve) => {
@@ -103,6 +133,21 @@ export function UploadPanel({
     setActiveConflict(null);
   }, []);
 
+  const handleOversizedResolve = useCallback(
+    (strategy: OversizedStrategy, applyToAll: boolean) => {
+      oversizedResolverRef.current?.({ strategy, applyToAll });
+      oversizedResolverRef.current = null;
+      setActiveOversized(null);
+    },
+    [],
+  );
+
+  const handleOversizedCancel = useCallback(() => {
+    oversizedResolverRef.current?.(null);
+    oversizedResolverRef.current = null;
+    setActiveOversized(null);
+  }, []);
+
   const handleNameConfirm = useCallback((name: string) => {
     nameResolverRef.current?.(name);
     nameResolverRef.current = null;
@@ -114,6 +159,63 @@ export function UploadPanel({
     nameResolverRef.current = null;
     setPendingFiles(null);
   }, []);
+
+  const resolveOversized = useCallback(
+    async (entries: UploadFileEntry[]) => {
+      const kept: UploadFileEntry[] = [];
+      let batchStrategy: OversizedStrategy | null = null;
+
+      for (const entry of entries) {
+        if (entry.file.size <= MAX_UPLOAD_BYTES) {
+          kept.push(entry);
+          continue;
+        }
+
+        let chosenStrategy: OversizedStrategy;
+
+        if (batchStrategy) {
+          chosenStrategy = batchStrategy;
+        } else {
+          const choice = await waitForOversizedChoice({
+            entryId: entry.id,
+            fileName: entry.originalKey,
+            fileSize: entry.file.size,
+          });
+          if (!choice) {
+            throw new Error("Upload cancelled");
+          }
+          chosenStrategy = choice.strategy;
+          if (choice.applyToAll) {
+            batchStrategy = choice.strategy;
+          }
+        }
+
+        if (chosenStrategy === "skip") {
+          continue;
+        }
+
+        const compressed = await compressImageToMaxBytes(entry.file);
+        const validation = validateImageFile({
+          name: compressed.name,
+          type: compressed.type,
+          size: compressed.size,
+        });
+        if (!validation.valid) {
+          throw new Error(validation.error);
+        }
+
+        kept.push({
+          ...entry,
+          file: compressed,
+          originalKey: compressed.name,
+          resolvedKey: compressed.name,
+        });
+      }
+
+      return kept;
+    },
+    [waitForOversizedChoice],
+  );
 
   const resolveConflicts = useCallback(
     async (entries: UploadFileEntry[]) => {
@@ -199,11 +301,14 @@ export function UploadPanel({
       const nextEntries: UploadFileEntry[] = [];
 
       for (const file of incomingFiles) {
-        const validation = validateImageFile({
-          name: file.name,
-          type: file.type || "application/octet-stream",
-          size: file.size,
-        });
+        const validation = validateImageFile(
+          {
+            name: file.name,
+            type: file.type || "application/octet-stream",
+            size: file.size,
+          },
+          { allowOversized: true },
+        );
 
         if (!validation.valid) {
           setQueueError(validation.error);
@@ -222,7 +327,30 @@ export function UploadPanel({
 
       setFiles(nextEntries);
 
-      const chosenName = await waitForBatchName(incomingFiles);
+      let sizedEntries: UploadFileEntry[];
+      try {
+        sizedEntries = await resolveOversized(nextEntries);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Upload cancelled";
+        setQueueError(message);
+        setIsProcessing(false);
+        setFiles([]);
+        return;
+      }
+
+      if (sizedEntries.length === 0) {
+        setQueueError("No files left to upload");
+        setIsProcessing(false);
+        setFiles([]);
+        return;
+      }
+
+      setFiles(sizedEntries);
+
+      const chosenName = await waitForBatchName(
+        sizedEntries.map((entry) => entry.file),
+      );
       if (!chosenName) {
         setIsProcessing(false);
         setFiles([]);
@@ -233,7 +361,7 @@ export function UploadPanel({
 
       let resolvedEntries: UploadFileEntry[];
       try {
-        resolvedEntries = await resolveConflicts(nextEntries);
+        resolvedEntries = await resolveConflicts(sizedEntries);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Upload cancelled";
@@ -317,7 +445,14 @@ export function UploadPanel({
         setFiles([]);
       }
     },
-    [disabled, onUploadComplete, resolveConflicts, target, waitForBatchName],
+    [
+      disabled,
+      onUploadComplete,
+      resolveConflicts,
+      resolveOversized,
+      target,
+      waitForBatchName,
+    ],
   );
 
   return (
@@ -368,8 +503,21 @@ export function UploadPanel({
         </Button>
       ) : null}
 
+      <UploadOversizedDialog
+        open={activeOversized !== null}
+        fileName={activeOversized?.fileName ?? ""}
+        fileSize={activeOversized?.fileSize ?? 0}
+        maxBytes={MAX_UPLOAD_BYTES}
+        onResolve={handleOversizedResolve}
+        onCancel={handleOversizedCancel}
+      />
+
       <UploadNameDialog
-        key={pendingFiles ? `name-${pendingFiles.length}-${files[0]?.id ?? "new"}` : "name-closed"}
+        key={
+          pendingFiles
+            ? `name-${pendingFiles.length}-${files[0]?.id ?? "new"}`
+            : "name-closed"
+        }
         open={pendingFiles !== null}
         fileCount={pendingFiles?.length ?? 0}
         onConfirm={handleNameConfirm}

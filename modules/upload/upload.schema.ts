@@ -132,11 +132,17 @@ export function mimeMatchesExtension(
   return allowed.includes(extension);
 }
 
-export function validateImageFile(file: {
-  name: string;
-  type: string;
-  size: number;
-}): { valid: true } | { valid: false; error: string } {
+export function validateImageFile(
+  file: {
+    name: string;
+    type: string;
+    size: number;
+  },
+  options?: {
+    /** When true, files over the size limit still pass (handled in the UI). */
+    allowOversized?: boolean;
+  },
+): { valid: true } | { valid: false; error: string } {
   if (!file.type.startsWith("image/")) {
     return {
       valid: false,
@@ -144,7 +150,7 @@ export function validateImageFile(file: {
     };
   }
 
-  if (file.size > MAX_UPLOAD_BYTES) {
+  if (!options?.allowOversized && file.size > MAX_UPLOAD_BYTES) {
     return {
       valid: false,
       error: `${file.name}: exceeds the 3 MB size limit`,
