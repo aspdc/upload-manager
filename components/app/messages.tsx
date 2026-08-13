@@ -60,7 +60,7 @@ export const COPY = {
   uploadZoneStub: {
     title: "Upload zone",
     description:
-      "Drag and drop images here once the uploader is connected. Each file must be an image up to 10 MB.",
+      "Drag and drop images here once the uploader is connected. Each file must be an image up to 3 MB.",
   },
   uploadDisabled: {
     title: "Uploads are paused",

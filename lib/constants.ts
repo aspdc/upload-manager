@@ -18,7 +18,7 @@ export const R2_PRICING = {
   readsPerMillionUsd: 0.36,
 } as const;
 
-export const MAX_UPLOAD_BYTES = 10 * 1024 ** 2;
+export const MAX_UPLOAD_BYTES = 3 * 1024 ** 2;
 
 export const KPI_LABELS = {
   writesAndLists: "Writes & lists",

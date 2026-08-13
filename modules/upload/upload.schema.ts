@@ -147,7 +147,7 @@ export function validateImageFile(file: {
   if (file.size > MAX_UPLOAD_BYTES) {
     return {
       valid: false,
-      error: `${file.name}: exceeds the 10 MB size limit`,
+      error: `${file.name}: exceeds the 3 MB size limit`,
     };
   }
 

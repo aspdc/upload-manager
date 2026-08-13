@@ -59,7 +59,7 @@ export function UploadDropzone({
           Drop images here or choose files
         </p>
         <p className="text-xs text-muted-foreground">
-          Images only, up to 10 MB each
+          Images only, up to 3 MB each
         </p>
       </div>
       <Button

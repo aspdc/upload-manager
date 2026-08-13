@@ -99,7 +99,7 @@ export function UploadTab({ target, onUploadComplete }: UploadTabProps) {
         <div>
           <h2 className="text-sm font-medium">Upload images</h2>
           <p className="text-xs text-muted-foreground">
-            Images only, up to 10 MB each. No in-app file browser.
+            Images only, up to 3 MB each. No in-app file browser.
           </p>
         </div>
         <OpenInCloudflareButton
