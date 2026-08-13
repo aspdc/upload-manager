@@ -36,16 +36,24 @@ async function parseMultipartUpload(request: Request): Promise<
         publicBaseUrl: string;
       };
       batchName: string;
+      saveHistory: boolean;
       files: ParsedUploadFile[];
       error: null;
     }
-  | { target: null; batchName: null; files: []; error: string }
+  | {
+      target: null;
+      batchName: null;
+      saveHistory: true;
+      files: [];
+      error: string;
+    }
 > {
   const { data: formData, error } = await tryCatch(request.formData());
   if (error) {
     return {
       target: null,
       batchName: null,
+      saveHistory: true,
       files: [],
       error: "Invalid upload request",
     };
@@ -56,6 +64,8 @@ async function parseMultipartUpload(request: Request): Promise<
   const publicBaseUrl = formData.get("publicBaseUrl");
   const batchNameRaw = formData.get("batchName");
   const keysRaw = formData.get("keys");
+  const saveHistoryRaw = formData.get("saveHistory");
+  const saveHistory = saveHistoryRaw !== "false";
 
   const targetParsed = uploadTargetSchema.safeParse({
     accountId: typeof accountId === "string" ? accountId : "",
@@ -67,6 +77,7 @@ async function parseMultipartUpload(request: Request): Promise<
     return {
       target: null,
       batchName: null,
+      saveHistory: true,
       files: [],
       error: "Upload target is invalid",
     };
@@ -79,10 +90,10 @@ async function parseMultipartUpload(request: Request): Promise<
     return {
       target: null,
       batchName: null,
+      saveHistory: true,
       files: [],
       error:
-        batchNameParsed.error.issues[0]?.message ??
-        "Give this upload a name",
+        batchNameParsed.error.issues[0]?.message ?? "Give this upload a name",
     };
   }
 
@@ -95,6 +106,7 @@ async function parseMultipartUpload(request: Request): Promise<
       return {
         target: null,
         batchName: null,
+        saveHistory: true,
         files: [],
         error: "Upload keys are invalid",
       };
@@ -103,6 +115,7 @@ async function parseMultipartUpload(request: Request): Promise<
       return {
         target: null,
         batchName: null,
+        saveHistory: true,
         files: [],
         error: "Upload keys are invalid",
       };
@@ -112,6 +125,7 @@ async function parseMultipartUpload(request: Request): Promise<
     return {
       target: null,
       batchName: null,
+      saveHistory: true,
       files: [],
       error: "Upload keys are required",
     };
@@ -122,6 +136,7 @@ async function parseMultipartUpload(request: Request): Promise<
     return {
       target: null,
       batchName: null,
+      saveHistory: true,
       files: [],
       error: "No files were provided",
     };
@@ -131,6 +146,7 @@ async function parseMultipartUpload(request: Request): Promise<
     return {
       target: null,
       batchName: null,
+      saveHistory: true,
       files: [],
       error: "Each file must have a matching object key",
     };
@@ -146,6 +162,7 @@ async function parseMultipartUpload(request: Request): Promise<
       return {
         target: null,
         batchName: null,
+        saveHistory: true,
         files: [],
         error: "Invalid file entry in upload",
       };
@@ -161,6 +178,7 @@ async function parseMultipartUpload(request: Request): Promise<
       return {
         target: null,
         batchName: null,
+        saveHistory: true,
         files: [],
         error: validation.error,
       };
@@ -173,6 +191,7 @@ async function parseMultipartUpload(request: Request): Promise<
       return {
         target: null,
         batchName: null,
+        saveHistory: true,
         files: [],
         error: `Could not read ${key} for upload`,
       };
@@ -189,6 +208,7 @@ async function parseMultipartUpload(request: Request): Promise<
   return {
     target: targetParsed.data,
     batchName: batchNameParsed.data,
+    saveHistory,
     files,
     error: null,
   };
@@ -334,6 +354,16 @@ export const uploadRoutes = new Elysia({ prefix: "/upload" })
 
     const urls = uploadedItems.map((item) => item.publicUrl);
     const copyPayload = buildCopyPayload(urls);
+
+    if (!parsed.saveHistory) {
+      return {
+        items: uploadedItems,
+        copyPayload,
+        batchName,
+        historySaved: false,
+        error: uploadError ?? undefined,
+      };
+    }
 
     const { error: historyError } = await tryCatch(
       saveUploadHistory({

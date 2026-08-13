@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -47,6 +48,10 @@ type OversizedQueueItem = {
 
 function createEntryId() {
   return crypto.randomUUID();
+}
+
+function reportUploadError(message: string) {
+  toast.error(message);
 }
 
 export function UploadPanel({
@@ -312,6 +317,7 @@ export function UploadPanel({
 
         if (!validation.valid) {
           setQueueError(validation.error);
+          reportUploadError(validation.error);
           setIsProcessing(false);
           return;
         }
@@ -334,13 +340,18 @@ export function UploadPanel({
         const message =
           error instanceof Error ? error.message : "Upload cancelled";
         setQueueError(message);
+        if (message !== "Upload cancelled") {
+          reportUploadError(message);
+        }
         setIsProcessing(false);
         setFiles([]);
         return;
       }
 
       if (sizedEntries.length === 0) {
-        setQueueError("No files left to upload");
+        const message = "No files left to upload";
+        setQueueError(message);
+        reportUploadError(message);
         setIsProcessing(false);
         setFiles([]);
         return;
@@ -366,14 +377,17 @@ export function UploadPanel({
         const message =
           error instanceof Error ? error.message : "Upload cancelled";
         setQueueError(message);
+        if (message !== "Upload cancelled") {
+          reportUploadError(message);
+        }
         setIsProcessing(false);
         return;
       }
 
       setFiles(
-        resolvedEntries.map((entry) => ({
+        resolvedEntries.map((entry, index) => ({
           ...entry,
-          status: "uploading" as const,
+          status: index === 0 ? ("uploading" as const) : ("pending" as const),
           error: undefined,
         })),
       );
@@ -383,46 +397,65 @@ export function UploadPanel({
         files: resolvedEntries.map((entry) => entry.file),
         keys: resolvedEntries.map((entry) => entry.resolvedKey),
         batchName: chosenName,
+        onFileComplete: ({ key, item, error }) => {
+          setFiles((current) => {
+            const updated = current.map((entry) => {
+              if (entry.resolvedKey !== key) {
+                return entry;
+              }
+              if (error || !item) {
+                return {
+                  ...entry,
+                  status: "failed" as const,
+                  error: error ?? "Upload failed",
+                };
+              }
+              return {
+                ...entry,
+                status: "done" as const,
+                publicUrl: item.publicUrl,
+                resolvedKey: item.key,
+              };
+            });
+
+            const nextPending = updated.find(
+              (entry) => entry.status === "pending",
+            );
+            if (!nextPending) {
+              return updated;
+            }
+
+            return updated.map((entry) =>
+              entry.id === nextPending.id
+                ? { ...entry, status: "uploading" as const }
+                : entry,
+            );
+          });
+        },
       });
 
       if ("error" in result && !("items" in result)) {
         setFiles((current) =>
-          current.map((item) => ({
-            ...item,
-            status: "failed",
-            error: result.error,
-          })),
+          current.map((item) =>
+            item.status === "done"
+              ? item
+              : {
+                  ...item,
+                  status: "failed" as const,
+                  error: result.error,
+                },
+          ),
         );
         setQueueError(result.error);
+        reportUploadError(result.error);
         setIsProcessing(false);
         return;
       }
 
-      const uploadedByKey = new Map(
-        result.items.map((item) => [item.key, item] as const),
-      );
-
-      setFiles((current) =>
-        current.map((item) => {
-          const uploaded = uploadedByKey.get(item.resolvedKey);
-          if (!uploaded) {
-            return {
-              ...item,
-              status: "failed",
-              error: result.error ?? "Upload failed",
-            };
-          }
-          return {
-            ...item,
-            status: "done",
-            publicUrl: uploaded.publicUrl,
-            resolvedKey: uploaded.key,
-          };
-        }),
-      );
-
       if (result.items.length === 0) {
-        setQueueError(result.error ?? "Upload failed");
+        const message = result.error ?? "Upload failed";
+        setQueueError(message);
+        reportUploadError(message);
         setIsProcessing(false);
         return;
       }
@@ -441,6 +474,14 @@ export function UploadPanel({
 
       if (result.error) {
         setQueueError(result.error);
+        reportUploadError(result.error);
+      } else if (result.historySaved === false) {
+        reportUploadError(
+          "Files uploaded, but history could not be saved. Try again later.",
+        );
+        setQueueError(
+          "Files uploaded, but history could not be saved. Try again later.",
+        );
       } else {
         setFiles([]);
       }
