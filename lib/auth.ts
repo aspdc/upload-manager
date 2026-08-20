@@ -3,7 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
-import { env } from "@/env";
+import { clientEnv, env } from "@/env";
 import {
   CLOUDFLARE_OAUTH_DISCOVERY_URL,
   CLOUDFLARE_OAUTH_PROVIDER_ID,
@@ -12,12 +12,28 @@ import {
 const cloudflareScopes =
   env.CLOUDFLARE_OAUTH_SCOPES.split(/\s+/).filter(Boolean);
 
+const allowedHosts = [
+  ...new Set([
+    new URL(env.BETTER_AUTH_URL).host,
+    new URL(clientEnv.NEXT_PUBLIC_APP_URL).host,
+    "*.vercel.app",
+  ]),
+];
+
 export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: "pg", schema }),
-  baseURL: env.BETTER_AUTH_URL,
+  baseURL: {
+    allowedHosts,
+    fallback: env.BETTER_AUTH_URL,
+  },
   basePath: "/api/auth",
   emailAndPassword: { enabled: false },
   secret: env.BETTER_AUTH_SECRET,
+  trustedOrigins: [
+    env.BETTER_AUTH_URL,
+    clientEnv.NEXT_PUBLIC_APP_URL,
+    "https://*.vercel.app",
+  ],
   plugins: [
     genericOAuth({
       config: [
@@ -26,8 +42,6 @@ export const auth = betterAuth({
           discoveryUrl: CLOUDFLARE_OAUTH_DISCOVERY_URL,
           clientId: env.CLOUDFLARE_CLIENT_ID,
           clientSecret: env.CLOUDFLARE_CLIENT_SECRET,
-          // Must match the OAuth client's registered redirect URL exactly.
-          redirectURI: `${env.BETTER_AUTH_URL}/api/auth/oauth2/callback/cloudflare`,
           scopes: cloudflareScopes,
           pkce: true,
           // Match Cloudflare dashboard / docs: client_secret_basic
