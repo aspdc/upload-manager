@@ -40,14 +40,14 @@ const CLASS_A_ACTIONS = new Set([
   "UploadPartCopy",
   "ListMultipartUploads",
   "ListParts",
-])
+]);
 
 const CLASS_B_ACTIONS = new Set([
   "GetObject",
   "HeadObject",
   "HeadBucket",
   "UsageSummary",
-])
+]);
 
 function buildMeter(used: number, allowance: number) {
   const remaining = Math.max(allowance - used, 0);
