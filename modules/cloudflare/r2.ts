@@ -36,9 +36,15 @@ export async function objectExists({
   key: string;
   accessToken: string;
 }): Promise<{ exists: boolean; error: string | null }> {
+  const listUrl = new URL(
+    `${CLOUDFLARE_API_BASE}/accounts/${accountId}/r2/buckets/${encodeURIComponent(bucketName)}/objects`,
+  );
+  listUrl.searchParams.set("prefix", key);
+  listUrl.searchParams.set("per_page", "20");
+
   const { data: response, error } = await tryCatch(
-    fetch(objectUrl(accountId, bucketName, key), {
-      method: "HEAD",
+    fetch(listUrl, {
+      method: "GET",
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
@@ -53,10 +59,6 @@ export async function objectExists({
     return { exists: false, error: null };
   }
 
-  if (response.ok) {
-    return { exists: true, error: null };
-  }
-
   if (response.status === 401 || response.status === 403) {
     return {
       exists: false,
@@ -64,9 +66,33 @@ export async function objectExists({
     };
   }
 
+  if (!response.ok) {
+    return {
+      exists: false,
+      error: `Cloudflare R2 returned status ${response.status}`,
+    };
+  }
+
+  const { data: payload } = await tryCatch(
+    response.json() as Promise<{
+      result?: Array<{ key?: string }> | { objects?: Array<{ key?: string }> };
+    }>,
+  );
+
+  let objects: Array<{ key?: string }> = [];
+  if (Array.isArray(payload?.result)) {
+    objects = payload.result;
+  } else if (
+    payload?.result &&
+    typeof payload.result === "object" &&
+    Array.isArray(payload.result.objects)
+  ) {
+    objects = payload.result.objects;
+  }
+
   return {
-    exists: false,
-    error: `Cloudflare R2 returned status ${response.status}`,
+    exists: objects.some((object) => object.key === key),
+    error: null,
   };
 }
 
